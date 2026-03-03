@@ -26,6 +26,10 @@ RUN apt-get update --yes --quiet && DEBIAN_FRONTEND=noninteractive apt-get insta
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+RUN mkdir -p /models && \
+    curl -L -o /models/Satyr-V0.1-4B-Q8_0.gguf \
+    https://huggingface.co/PantheonUnbound/Satyr-V0.1-4B/resolve/main/Satyr-V0.1-4B-Q8_0.gguf
+    
 # Set the working directory
 WORKDIR /work
 
