@@ -6,6 +6,8 @@ ENV PYTHONUNBUFFERED=1
 # Set up the working directory
 WORKDIR /
 
+RUN rm -f /etc/apt/sources.list.d/cuda*.list /etc/apt/sources.list.d/nvidia*.list || true
+
 RUN apt-get update --yes --quiet && DEBIAN_FRONTEND=noninteractive apt-get install --yes --quiet --no-install-recommends \
     software-properties-common \
     gpg-agent \
@@ -26,10 +28,15 @@ RUN apt-get update --yes --quiet && DEBIAN_FRONTEND=noninteractive apt-get insta
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /models && \
-    curl -L -o /models/Satyr-V0.1-4B-Q8_0.gguf \
-    https://huggingface.co/PantheonUnbound/Satyr-V0.1-4B/resolve/main/Satyr-V0.1-4B-Q8_0.gguf
+# Erotica
+# RUN mkdir -p /models && \
+#    curl -L -o /models/Satyr-V0.1-4B-Q8_0.gguf \
+#    https://huggingface.co/PantheonUnbound/Satyr-V0.1-4B/resolve/main/Satyr-V0.1-4B-Q8_0.gguf
     
+RUN mkdir -p /models && \
+    curl -L -o /models/Meta-Llama-3.1-8B-Instruct-Q6_K.gguf \
+    https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q6_K.gguf
+
 # Set the working directory
 WORKDIR /work
 
