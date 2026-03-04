@@ -56,35 +56,27 @@ echo "start.sh: Stopping existing llama-server instances (if any)..."
 # we have a string with all the command line arguments in the env var LLAMA_SERVER_CMD_ARGS;
 # it contains a.e. "-hf modelname --ctx-size 4096 -ngl 999".
 
-# --- ensure GGUF exists + is valid (prevents "some workers" failures) ---
-MODEL_PATH=""
+# --- ensure model exists on THIS worker (some workers don't have /models populated) ---
+MODEL_URL="https://huggingface.co/bartowski/Qwen2.5-72B-Instruct-GGUF/resolve/main/Qwen2.5-72B-Instruct-Q3_K_L.gguf"
+MODEL_PATH="/models/Qwen2.5-72B-Instruct-Q3_K_L.gguf"
 
-# Prefer cached path if caching is enabled; otherwise use -m from LLAMA_SERVER_CMD_ARGS
-if [ -n "$LLAMA_CACHED_MODEL" ]; then
-    # CACHED_LLAMA_ARGS looks like: -m /some/path/model.gguf
-    MODEL_PATH="$(echo "$CACHED_LLAMA_ARGS" | awk '{print $2}')"
-else
-    # Extract model path from: -m /models/whatever.gguf ...
-    MODEL_PATH="$(echo "$LLAMA_SERVER_CMD_ARGS" | sed -n 's/.*-m[[:space:]]\+\([^[:space:]]\+\).*/\1/p')"
+mkdir -p /models
+
+if [ ! -f "$MODEL_PATH" ]; then
+    echo "start.sh: Model missing on this worker; downloading to $MODEL_PATH ..."
+    rm -f "${MODEL_PATH}.partial"
+    curl -L --fail --retry 20 --retry-delay 2 --continue-at - \
+        -o "${MODEL_PATH}.partial" \
+        "$MODEL_URL"
+    mv "${MODEL_PATH}.partial" "$MODEL_PATH"
 fi
 
-if [ -n "$MODEL_PATH" ]; then
-    echo "start.sh: Verifying model file: $MODEL_PATH"
-
-    if [ ! -f "$MODEL_PATH" ]; then
-        echo "start.sh: ERROR: Model file not found: $MODEL_PATH"
-        exit 1
-    fi
-
-    # Quick integrity check: make sure GGUF header is readable
-    if ! /app/llama-gguf-split --info "$MODEL_PATH" >/dev/null 2>&1; then
-        echo "start.sh: ERROR: Model file appears corrupt or incomplete: $MODEL_PATH"
-        exit 1
-    fi
-else
-    echo "start.sh: WARNING: Could not determine MODEL_PATH (no -m found). Skipping GGUF verification."
+# sanity check (fast)
+if ! /app/llama-gguf-split --info "$MODEL_PATH" >/dev/null 2>&1; then
+    echo "start.sh: ERROR: Model file is corrupt: $MODEL_PATH"
+    exit 1
 fi
-# --- end verify ---
+# --- end ensure ---
 
 echo "start.sh: Running /app/llama-server $CACHED_LLAMA_ARGS $LLAMA_SERVER_CMD_ARGS --port 3098"
 
