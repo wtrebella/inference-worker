@@ -62,19 +62,29 @@ MODEL_PATH="/models/Qwen2.5-72B-Instruct-Q3_K_L.gguf"
 
 mkdir -p /models
 
+download_model() {
+  echo "start.sh: Downloading model..."
+  rm -f "${MODEL_PATH}.partial"
+  curl -L --fail --retry 20 --retry-delay 2 --continue-at - \
+    -o "${MODEL_PATH}.partial" \
+    "$MODEL_URL"
+  mv "${MODEL_PATH}.partial" "$MODEL_PATH"
+}
+
+# If missing, download
 if [ ! -f "$MODEL_PATH" ]; then
-    echo "start.sh: Model missing on this worker; downloading to $MODEL_PATH ..."
-    rm -f "${MODEL_PATH}.partial"
-    curl -L --fail --retry 20 --retry-delay 2 --continue-at - \
-        -o "${MODEL_PATH}.partial" \
-        "$MODEL_URL"
-    mv "${MODEL_PATH}.partial" "$MODEL_PATH"
+  echo "start.sh: Model missing: $MODEL_PATH"
+  download_model
 fi
 
-# sanity check (fast)
+# If corrupt, wipe + re-download
 if ! /app/llama-gguf-split --info "$MODEL_PATH" >/dev/null 2>&1; then
-    echo "start.sh: ERROR: Model file is corrupt: $MODEL_PATH"
-    exit 1
+  echo "start.sh: Model corrupt/incomplete; deleting and re-downloading: $MODEL_PATH"
+  rm -f "$MODEL_PATH"
+  download_model
+
+  # Final check
+  /app/llama-gguf-split --info "$MODEL_PATH" >/dev/null
 fi
 # --- end ensure ---
 
