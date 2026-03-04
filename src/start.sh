@@ -56,6 +56,36 @@ echo "start.sh: Stopping existing llama-server instances (if any)..."
 # we have a string with all the command line arguments in the env var LLAMA_SERVER_CMD_ARGS;
 # it contains a.e. "-hf modelname --ctx-size 4096 -ngl 999".
 
+# --- ensure GGUF exists + is valid (prevents "some workers" failures) ---
+MODEL_PATH=""
+
+# Prefer cached path if caching is enabled; otherwise use -m from LLAMA_SERVER_CMD_ARGS
+if [ -n "$LLAMA_CACHED_MODEL" ]; then
+    # CACHED_LLAMA_ARGS looks like: -m /some/path/model.gguf
+    MODEL_PATH="$(echo "$CACHED_LLAMA_ARGS" | awk '{print $2}')"
+else
+    # Extract model path from: -m /models/whatever.gguf ...
+    MODEL_PATH="$(echo "$LLAMA_SERVER_CMD_ARGS" | sed -n 's/.*-m[[:space:]]\+\([^[:space:]]\+\).*/\1/p')"
+fi
+
+if [ -n "$MODEL_PATH" ]; then
+    echo "start.sh: Verifying model file: $MODEL_PATH"
+
+    if [ ! -f "$MODEL_PATH" ]; then
+        echo "start.sh: ERROR: Model file not found: $MODEL_PATH"
+        exit 1
+    fi
+
+    # Quick integrity check: make sure GGUF header is readable
+    if ! /app/llama-gguf-split --info "$MODEL_PATH" >/dev/null 2>&1; then
+        echo "start.sh: ERROR: Model file appears corrupt or incomplete: $MODEL_PATH"
+        exit 1
+    fi
+else
+    echo "start.sh: WARNING: Could not determine MODEL_PATH (no -m found). Skipping GGUF verification."
+fi
+# --- end verify ---
+
 echo "start.sh: Running /app/llama-server $CACHED_LLAMA_ARGS $LLAMA_SERVER_CMD_ARGS --port 3098"
 
 touch llama.server.log
@@ -70,10 +100,8 @@ tries_so_far=0
 check_server_is_running() {
     echo "start.sh: Checking if llama-server is done initializing..."
 
-    if cat llama.server.log | grep -q "listening"; then
-        return 0 # success
-    else
-        return 1 # failure
+    if grep -q "listening" llama.server.log; then
+        return 0
     fi
 
     tries_so_far=$((tries_so_far + 1))
@@ -83,11 +111,12 @@ check_server_is_running() {
         exit 1
     fi
 
-    # check if the process is still running
     if ! kill -0 $LLAMA_SERVER_PID 2>/dev/null; then
         echo "start.sh: Error: llama-server process has exited unexpectedly."
         exit 1
     fi
+
+    return 1
 }
 
 echo "start.sh: Waiting for llama-server to start..."
