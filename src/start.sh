@@ -3,6 +3,20 @@
 # fail on error:
 set -e -o pipefail
 
+# --- add this near the top (after set -e -o pipefail) ---
+LLAMA_SERVER_BIN="$(command -v llama-server || true)"
+LLAMA_GGUF_SPLIT_BIN="$(command -v llama-gguf-split || true)"
+
+if [[ -z "$LLAMA_SERVER_BIN" ]]; then
+  echo "start.sh: ERROR: llama-server not found in PATH"
+  exit 1
+fi
+
+if [[ -z "$LLAMA_GGUF_SPLIT_BIN" ]]; then
+  echo "start.sh: ERROR: llama-gguf-split not found in PATH"
+  exit 1
+fi
+
 # This script starts the llama-server with the command line arguments
 # specified in the environment variable LLAMA_SERVER_CMD_ARGS, ensuring
 # that the server listens on port 3098. It also starts the handler.py
@@ -32,8 +46,8 @@ fi
 
 # check if $LLAMA_SERVER_CMD_ARGS is set
 if [ -z "$LLAMA_SERVER_CMD_ARGS" ]; then
-    echo "start.sh: Warning: LLAMA_SERVER_CMD_ARGS is not set. Defaulting to -hf unsloth/gemma-3-270m-it-GGUF:IQ2_XXS --ctx-size 512 -ngl 999"
-    LLAMA_SERVER_CMD_ARGS="-hf unsloth/gemma-3-270m-it-GGUF:IQ2_XXS --ctx-size 512 -ngl 999"
+    echo "start.sh: Warning: LLAMA_SERVER_CMD_ARGS is not set. Defaulting to -hf --ctx-size 512 -ngl 999"
+    LLAMA_SERVER_CMD_ARGS="--ctx-size 512 -ngl 999"
 fi
 
 # check if the substring --port is in LLAMA_SERVER_CMD_ARGS and if yes, raise an error:
@@ -53,55 +67,15 @@ echo "start.sh: Stopping existing llama-server instances (if any)..."
     echo "start.sh: No llama-server running"
 }
 
-# we have a string with all the command line arguments in the env var LLAMA_SERVER_CMD_ARGS;
-# it contains a.e. "-hf modelname --ctx-size 4096 -ngl 999".
-
-# --- ensure model exists on THIS worker (some workers don't have /models populated) ---
-MODEL_URL="https://huggingface.co/bartowski/Qwen2.5-72B-Instruct-GGUF/resolve/main/Qwen2.5-72B-Instruct-Q3_K_L.gguf"
-MODEL_PATH="/models/Qwen2.5-72B-Instruct-Q3_K_L.gguf"
-
-mkdir -p /models
-
-download_model() {
-  echo "start.sh: Downloading model..."
-  rm -f "${MODEL_PATH}.partial"
-  curl -L --fail --retry 20 --retry-delay 2 --continue-at - \
-    -o "${MODEL_PATH}.partial" \
-    "$MODEL_URL"
-  mv "${MODEL_PATH}.partial" "$MODEL_PATH"
-}
-
-# If missing, download
-if [ ! -f "$MODEL_PATH" ]; then
-  echo "start.sh: Model missing: $MODEL_PATH"
-  download_model
-fi
-
-# If corrupt, wipe + re-download
-if ! /app/llama-gguf-split --info "$MODEL_PATH" >/dev/null 2>&1; then
-  echo "start.sh: Model corrupt/incomplete; deleting and re-downloading: $MODEL_PATH"
-  rm -f "$MODEL_PATH"
-  download_model
-
-  # Final check
-  /app/llama-gguf-split --info "$MODEL_PATH" >/dev/null
-fi
-# --- end ensure ---
-
-echo "start.sh: Running /app/llama-server $CACHED_LLAMA_ARGS $LLAMA_SERVER_CMD_ARGS --port 3098"
-
+echo "start.sh: Running $LLAMA_SERVER_BIN $CACHED_LLAMA_ARGS $LLAMA_SERVER_CMD_ARGS --port 3098"
 touch llama.server.log
 
-# We need to pass these arguments to llama-server verbatim.
-LD_LIBRARY_PATH=/app /app/llama-server $CACHED_LLAMA_ARGS $LLAMA_SERVER_CMD_ARGS --port 3098 2>&1 | tee llama.server.log &
-
+"$LLAMA_SERVER_BIN" $CACHED_LLAMA_ARGS $LLAMA_SERVER_CMD_ARGS --port 3098 2>&1 | tee llama.server.log
 LLAMA_SERVER_PID=$! # store the process ID (PID) of the background command
 
 tries_so_far=0
 
 check_server_is_running() {
-    echo "start.sh: Checking if llama-server is done initializing..."
-
     if grep -q "listening" llama.server.log; then
         return 0
     fi
@@ -122,7 +96,6 @@ check_server_is_running() {
 }
 
 echo "start.sh: Waiting for llama-server to start..."
-
 # wait for the server to start
 while ! check_server_is_running; do
     # we don't want to lose too much time, so we check very frequently

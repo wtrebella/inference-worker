@@ -33,9 +33,9 @@ RUN apt-get update --yes --quiet && DEBIAN_FRONTEND=noninteractive apt-get insta
 #    curl -L -o /models/Satyr-V0.1-4B-Q8_0.gguf \
 #    https://huggingface.co/PantheonUnbound/Satyr-V0.1-4B/resolve/main/Satyr-V0.1-4B-Q8_0.gguf
     
-RUN mkdir -p /models && \
-    curl -L -o /models/Qwen2.5-72B-Instruct-Q3_K_L.gguf \
-    https://huggingface.co/bartowski/Qwen2.5-72B-Instruct-GGUF/resolve/main/Qwen2.5-72B-Instruct-Q3_K_L.gguf
+# RUN mkdir -p /models && \
+#     curl -L -o /models/Qwen2.5-72B-Instruct-Q3_K_L.gguf \
+#     https://huggingface.co/bartowski/Qwen2.5-72B-Instruct-GGUF/resolve/main/Qwen2.5-72B-Instruct-Q3_K_L.gguf
 
 # Set the working directory
 WORKDIR /work
