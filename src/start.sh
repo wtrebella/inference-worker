@@ -1,26 +1,11 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# fail on error:
-set -e -o pipefail
+echo "image ready, initializing model files"
 
-# --- add this near the top (after set -e -o pipefail) ---
-LLAMA_SERVER_BIN="$(command -v llama-server || true)"
-LLAMA_GGUF_SPLIT_BIN="$(command -v llama-gguf-split || true)"
-
-if [[ -z "$LLAMA_SERVER_BIN" ]]; then
-  echo "start.sh: ERROR: llama-server not found in PATH"
-  exit 1
-fi
-
-if [[ -z "$LLAMA_GGUF_SPLIT_BIN" ]]; then
-  echo "start.sh: ERROR: llama-gguf-split not found in PATH"
-  exit 1
-fi
-
-# This script starts the llama-server with the command line arguments
-# specified in the environment variable LLAMA_SERVER_CMD_ARGS, ensuring
-# that the server listens on port 3098. It also starts the handler.py
-# script after the server is up and running.
+# -------- env --------
+LLAMA_CACHED_MODEL="${LLAMA_CACHED_MODEL:-}"
+LLAMA_CACHED_GGUF_PATH="${LLAMA_CACHED_GGUF_PATH:-model.gguf}"
 
 cleanup() {
     echo "start.sh: Cleaning up..."
@@ -28,38 +13,34 @@ cleanup() {
     exit 0
 }
 
-CACHED_LLAMA_ARGS=""
+# -------- probe likely HuggingFace cache roots --------
+# (RunPod and many images mount the HF hub cache in one of these)
+declare -a PROBE_DIRS=(
+  "${CACHE_DIR:-}"
+  "${HUGGINGFACE_HUB_CACHE:-}"
+  "${HF_HOME:-}"
+  "/runpod-volume/huggingface-cache/hub"
+  "/runpod-volume/huggingface-cache"
+  "/root/.cache/huggingface/hub"
+  "/workspace/.cache/huggingface/hub"
+)
 
-find_cached_path() {
-    CACHED_LLAMA_ARGS="-m $(python ./find_cached.py $LLAMA_CACHED_MODEL $LLAMA_CACHED_GGUF_PATH)"
-}
+LLAMA_CACHED_MODEL="${LLAMA_CACHED_MODEL//\//--}"
+MODEL_REL="${LLAMA_CACHED_GGUF_PATH}"
 
-# check if $LLAMA_CACHED_MODEL is set and not empty
-if [ -n "$LLAMA_CACHED_MODEL" ]; then
-    echo "start.sh: Caching is enabled. Finding cached model path..."
-    find_cached_path
+echo "LLAMA_CACHED_MODEL=$LLAMA_CACHED_MODEL"
+echo "LLAMA_CACHED_GGUF_PATH=$LLAMA_CACHED_GGUF_PATH"
+echo "CACHE_DIR=${CACHE_DIR:-}"
+echo "HF_HOME=${HF_HOME:-}"
+echo "HUGGINGFACE_HUB_CACHE=${HUGGINGFACE_HUB_CACHE:-}"
 
-    echo "start.sh: Using cached model with arguments: $CACHED_LLAMA_ARGS"
-else
-    echo "start.sh: WARNING: Caching is disabled. Please visit the inference-worker README and docs to learn more."
+if [[ -z "$LLAMA_CACHED_MODEL" ]]; then
+  echo "image ready, model not found (LLAMA_CACHED_MODEL is empty)"
+  exit 1
 fi
 
-# check if $LLAMA_SERVER_CMD_ARGS is set
-if [ -z "$LLAMA_SERVER_CMD_ARGS" ]; then
-    echo "start.sh: Warning: LLAMA_SERVER_CMD_ARGS is not set. Defaulting to -hf --ctx-size 512 -ngl 999"
-    LLAMA_SERVER_CMD_ARGS="--ctx-size 512 -ngl 999"
-fi
-
-# check if the substring --port is in LLAMA_SERVER_CMD_ARGS and if yes, raise an error:
-if [[ "$LLAMA_SERVER_CMD_ARGS" == *"--port"* ]]; then
-    echo "start.sh: Error: You must not define --port in LLAMA_SERVER_CMD_ARGS, as port 3098 is required."
-    exit 1
-fi
-
-# trap exit signals and call the cleanup function
 trap cleanup SIGINT SIGTERM
 
-# kill any existing llama-server processes
 echo "start.sh: Stopping existing llama-server instances (if any)..."
 {
     pkill llama-server 2>/dev/null
@@ -67,15 +48,63 @@ echo "start.sh: Stopping existing llama-server instances (if any)..."
     echo "start.sh: No llama-server running"
 }
 
-echo "start.sh: Running $LLAMA_SERVER_BIN $CACHED_LLAMA_ARGS $LLAMA_SERVER_CMD_ARGS --port 3098"
+MODEL_PATH=""
+
+for d in "${PROBE_DIRS[@]}"; do
+  [[ -n "$d" ]] || continue
+
+  echo "=== probing: $d ==="
+  ls -la "$d" 2>/dev/null | head -n 60 || { echo "(missing)"; continue; }
+
+  SNAP_DIR="$d/models--${LLAMA_CACHED_MODEL}/snapshots"
+  if [[ -d "$SNAP_DIR" ]]; then
+    echo "found snapshots dir: $SNAP_DIR"
+    ls -la "$SNAP_DIR" 2>/dev/null | head -n 60 || true
+
+    # Pick newest snapshot (sorted) and see if GGUF exists
+    SNAP_ID="$(ls -1 "$SNAP_DIR" 2>/dev/null | sort | tail -n 1 || true)"
+    if [[ -n "$SNAP_ID" ]]; then
+      CAND="$SNAP_DIR/$SNAP_ID/$MODEL_REL"
+      echo "candidate: $CAND"
+      if [[ -f "$CAND" ]]; then
+        MODEL_PATH="$CAND"
+        break
+      fi
+      echo "candidate not found; listing snapshot root:"
+      ls -la "$SNAP_DIR/$SNAP_ID" 2>/dev/null | head -n 100 || true
+    fi
+  else
+    echo "no snapshots dir at: $SNAP_DIR"
+  fi
+done
+
+if [[ -z "$MODEL_PATH" ]]; then
+  echo "image ready, model not found"
+  exit 1
+fi
+
+echo "model found at: $MODEL_PATH"
+
+# -------- build llama-server args --------
+LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-/app/llama-server}"
+LLAMA_SERVER_HOST="${LLAMA_SERVER_HOST:-0.0.0.0}"
+
+# If you already pass args via LLAMA_SERVER_CMD_ARGS, keep them.
+# If you don't, these defaults are sane for RunPod.
+LLAMA_SERVER_CMD_ARGS="${LLAMA_SERVER_CMD_ARGS:---ctx-size 8192 -ngl 999 -n 160}"
+
+echo "starting: $LLAMA_SERVER_BIN -m \"$MODEL_PATH\" $LLAMA_SERVER_CMD_ARGS"
 touch llama.server.log
 
-"$LLAMA_SERVER_BIN" $CACHED_LLAMA_ARGS $LLAMA_SERVER_CMD_ARGS --port 3098 2>&1 | tee llama.server.log
+LD_LIBRARY_PATH=/app "$LLAMA_SERVER_BIN" -m "$MODEL_PATH" --port 3098 $LLAMA_SERVER_CMD_ARGS 2>&1 | tee llama.server.log &
+
 LLAMA_SERVER_PID=$! # store the process ID (PID) of the background command
 
 tries_so_far=0
 
 check_server_is_running() {
+    echo "start.sh: Checking if llama-server is done initializing..."
+
     if grep -q "listening" llama.server.log; then
         return 0
     fi
@@ -96,6 +125,7 @@ check_server_is_running() {
 }
 
 echo "start.sh: Waiting for llama-server to start..."
+
 # wait for the server to start
 while ! check_server_is_running; do
     # we don't want to lose too much time, so we check very frequently
@@ -104,4 +134,4 @@ done
 
 echo "start.sh: llama-server is up and running, delegating to the handler script."
 
-python -u handler.py $1
+python -u handler.py "${1:-}"
